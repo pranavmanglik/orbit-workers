@@ -23,6 +23,7 @@ from orbit_workers.worker import (
     WorkFailureHandler,
     WorkHandler,
     WorkMessage,
+    WorkPublisher,
     WorkQueue,
 )
 
@@ -35,6 +36,7 @@ __all__ = [
     "WorkFailureHandler",
     "WorkHandler",
     "WorkMessage",
+    "WorkPublisher",
     "WorkQueue",
     "WorkerQueueError",
 ]

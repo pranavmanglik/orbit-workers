@@ -24,9 +24,10 @@ python -m pip install orbit-workers
 
 Handlers are at-least-once: they can run again after a timeout, process crash, or lost acknowledgement.
 Make side effects idempotent. The runner does not provide exactly-once processing, durable storage,
-dead-letter storage, cross-worker ordering, or a broker. A queue failure stops the worker group so
+dead-letter storage, cross-worker ordering, or a broker. `WorkPublisher` defines a confirmed
+publication contract but does not itself store messages. A queue failure stops the worker group so
 the host can mark it unhealthy and apply an explicit restart policy. No queue or provider adapter is
-included; without a separately installed adapter this package cannot receive jobs.
+included; without a separately installed adapter this package cannot publish or receive jobs.
 
 ## Production validation
 

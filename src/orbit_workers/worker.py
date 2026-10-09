@@ -162,6 +162,19 @@ class WorkQueue(Protocol):
         """Wait no longer than ``timeout`` and return a delivery, or ``None`` when idle."""
 
 
+@runtime_checkable
+class WorkPublisher(Protocol):
+    """Durable publication contract for producers that require broker confirmation.
+
+    Implementations return only after the backend confirms acceptance. A failed or ambiguous
+    publication raises so callers can return a retryable response; messages may be delivered more
+    than once and consumers must remain idempotent.
+    """
+
+    async def publish(self, message: WorkMessage) -> None:
+        """Publish one message and wait for durable backend confirmation."""
+
+
 class QueueWorker:
     """Run bounded queue-backed handlers with explicit at-least-once settlement semantics.
 
@@ -384,6 +397,7 @@ __all__ = [
     "WorkFailureHandler",
     "WorkHandler",
     "WorkMessage",
+    "WorkPublisher",
     "WorkQueue",
     "WorkerQueueError",
 ]

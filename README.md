@@ -1,7 +1,7 @@
 # Orbit Workers
 
-`orbit-workers` is a provider-neutral runner for queue-backed async jobs. It is distinct from
-`orbit-scheduler`, which starts process-local jobs on intervals, and from Core's supervisor for
+`orbit-workers` defines provider-neutral `WorkQueue`/`WorkPublisher` contracts and a runner for
+queue-backed async jobs. It is distinct from `orbit-scheduler`, which starts process-local jobs on intervals, and from Core's supervisor for
 application-owned background tasks. This package supports Python 3.11 through 3.14 and is pre-alpha.
 
 ```bash
@@ -9,6 +9,11 @@ python -m pip install orbit-workers
 ```
 
 ## Queue contract and worker runner
+
+`WorkPublisher.publish()` is the producer-side contract. Adapters return only after backend
+confirmation and raise on failed or ambiguous publication; messages may be delivered more than once,
+so consumers must be idempotent. This package defines the contract but includes no broker or
+durable-storage implementation.
 
 An adapter implements `WorkQueue.receive()` and returns a leased `WorkDelivery`. The runner invokes
 the handler with an immutable `WorkMessage`, then acknowledges success, retries handler failures
@@ -49,7 +54,7 @@ Handlers are at-least-once: they can run again after a timeout, process crash, o
 Make side effects idempotent. The runner does not provide exactly-once processing, durable storage,
 dead-letter storage, cross-worker ordering, or a broker. A queue failure stops the worker group so
 the host can mark it unhealthy and apply an explicit restart policy. No queue or provider adapter is
-included; without a separately installed adapter this package cannot receive jobs.
+included; without a separately installed adapter this package cannot publish or receive jobs.
 
 ## Documentation
 
@@ -65,4 +70,3 @@ mypy
 ```
 
 Licensed under Apache-2.0.
-

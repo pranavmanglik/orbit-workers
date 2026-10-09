@@ -31,6 +31,12 @@ Representative implementation files in this checkout:
 
 ## Queue contract and worker runner
 
+`WorkPublisher.publish()` is the producer-side contract. An implementation must return only after
+its backend confirms acceptance and raise on failed or ambiguous publication. That lets an HTTP
+application return success only after the configured transport accepts a message. Delivery remains
+at least once, so consumers must be idempotent. `orbit-workers` defines this contract but includes
+no broker client or durable storage; provider packages such as `orbit-workers-rabbitmq` own those.
+
 An adapter implements `WorkQueue.receive()` and returns a leased `WorkDelivery`. The runner invokes
 the handler with an immutable `WorkMessage`, then acknowledges success, retries handler failures
 using bounded exponential backoff, or rejects a delivery after the configured attempt limit:
