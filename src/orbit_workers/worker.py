@@ -29,6 +29,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 _LOG = logging.getLogger("orbit.workers")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_ERROR_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,127}\Z")
 _MAX_PAYLOAD_BYTES = 1_048_576
 _MAX_HEADERS = 32
 _MAX_HEADER_VALUE_LENGTH = 256
@@ -40,7 +41,7 @@ WORK_QUEUE_DEPENDENCY_KEY = "orbit.work_queue"
 
 
 class WorkerQueueError(RuntimeError):
-    """Safe error indicating a work queue receive or settlement operation failed."""
+    """Generic receive or settlement failure raised without provider error details."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +67,7 @@ WorkHandler = Callable[[WorkMessage], Awaitable[None]]
 
 @dataclass(frozen=True, slots=True)
 class WorkFailure:
-    """Safe handler failure metadata without message payload or exception contents."""
+    """Runner failure metadata without handler payload or exception message contents."""
 
     queue: str
     message_id: str
@@ -224,29 +225,37 @@ class QueueWorker:
         self._on_failure = on_failure
         self._has_run = False
 
-    async def run(self) -> None:
-        """Run fixed workers until caller cancellation or a queue operation fails.
+    async def run(self, *, stop_event: asyncio.Event | None = None) -> None:
+        """Run fixed workers until graceful stop, caller cancellation, or queue failure.
 
         A worker queue failure cancels sibling workers and fails the pool. Supervise this coroutine
-        with Core's application lifecycle or another host task manager. A pool instance is single
-        use because message state may be uncertain after cancellation or transport failure.
+        with Core's application lifecycle or another host task manager. Setting ``stop_event`` stops
+        workers from beginning another delivery after their current receive completes; active
+        handlers finish and settle normally. A delivery returned concurrently with shutdown remains
+        unsettled for redelivery. Caller cancellation is the deadline-expiry path and leaves active
+        deliveries unsettled. A pool instance is single use because message state may be uncertain
+        after cancellation or transport failure.
         """
+        if stop_event is not None and not isinstance(stop_event, asyncio.Event):
+            raise TypeError("stop_event must be an asyncio.Event or None.")
         if self._has_run:
             raise RuntimeError("QueueWorker instances can only be run once.")
         self._has_run = True
         try:
             async with asyncio.TaskGroup() as group:
                 for index in range(self._workers):
-                    group.create_task(self._worker(index), name=f"orbit-worker-{index}")
+                    group.create_task(self._worker(index, stop_event), name=f"orbit-worker-{index}")
         except* WorkerQueueError:
             raise WorkerQueueError(
                 "Queue worker group stopped after a queue operation failed."
             ) from None
 
-    async def _worker(self, index: int) -> None:
+    async def _worker(self, index: int, stop_event: asyncio.Event | None) -> None:
         """Receive, execute, and settle one delivery at a time for this worker slot."""
         del index  # Task names aid host diagnostics; worker identity is not part of queue data.
         while True:
+            if stop_event is not None and stop_event.is_set():
+                return
             try:
                 delivery = await self._queue.receive(timeout=self._poll_timeout)
             except asyncio.CancelledError:
@@ -258,6 +267,9 @@ class QueueWorker:
                 # a broken adapter from spinning continuously while it has no messages.
                 await asyncio.sleep(min(self._poll_timeout, 0.05))
                 continue
+            if stop_event is not None and stop_event.is_set():
+                # The delivery raced with shutdown. Leave it unsettled for broker redelivery.
+                return
             if not isinstance(delivery, WorkDelivery):
                 raise WorkerQueueError("Queue returned an invalid work delivery.")
             try:
@@ -284,7 +296,7 @@ class QueueWorker:
                     queue=message.queue,
                     message_id=message.message_id,
                     attempt=attempt,
-                    error_type=type(exc).__name__[:128],
+                    error_type=_safe_error_type(type(exc).__name__),
                     occurred_at=time.time(),
                 )
                 await self._report_failure(failure)
@@ -343,7 +355,7 @@ class QueueWorker:
             _LOG.error(
                 "Work failure observer failed: queue=%s error_type=%s",
                 failure.queue,
-                type(exc).__name__[:128],
+                _safe_error_type(type(exc).__name__),
             )
 
 
@@ -352,6 +364,11 @@ def _validate_identifier(value: object, field_name: str) -> str:
     if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
         raise ValueError(f"{field_name} must be a bounded safe ASCII identifier.")
     return value
+
+
+def _safe_error_type(value: str) -> str:
+    """Keep exception class diagnostics bounded and free from log-control characters."""
+    return value if _ERROR_TYPE.fullmatch(value) is not None else "Exception"
 
 
 def _freeze_headers(value: object) -> Mapping[str, str]:

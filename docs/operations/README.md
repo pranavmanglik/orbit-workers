@@ -1,34 +1,70 @@
-# Orbit Workers: operations and security
+# Orbit Workers: operations guide
 
-This guide organizes runtime behavior documented by the package. It does not certify production readiness. Verify provider/client versions, permissions, transport security, limits, and failure behavior in the target environment before release.
+`orbit-workers` runs queue consumers but does not provide the broker, durable storage, queue
+adapter, or process supervisor. The application owns the queue adapter and should supervise
+`QueueWorker.run()` through its lifecycle. A worker instance is single-use; construct a new one
+when starting a new supervised run.
 
-## Configuration surface
+## Capacity and polling
 
-Environment names found in the package README:
+The runner allows 1–256 concurrent worker tasks (default 4), each with one active delivery at a
+time. This bounds handler concurrency for one `QueueWorker` instance only. Multiply by the number
+of instances and replicas to estimate total application concurrency; separately configure the
+broker adapter's prefetch, connection-pool size, and provider quotas. The default receive poll
+timeout is one second and may be configured from 1 ms to 60 seconds.
 
-The package README does not name `ORBIT_*` variables. Use its typed constructors and application configuration, and confirm exact runtime inputs in the implementation before deployment.
+Messages are capped at 1 MiB of payload. Up to 32 string headers are accepted, each at most 256
+characters, with a 4 KiB combined encoded size. These limits apply when constructing `WorkMessage`;
+they do not constrain bytes buffered by the broker client before construction. Set provider-side
+message, prefetch, and request limits too.
 
-Use the package README's constructor and deployment examples. Store credentials in a secret manager and avoid logging credentials, raw provider errors, request data, or opaque cursors.
+## Acknowledgement and retry behavior
 
-## Lifecycle, failure behavior, and limits
+The runner acknowledges after the handler returns successfully. When the handler raises an
+ordinary exception, it reports payload-free metadata and asks the queue to retry or reject:
 
-`orbit-workers` is a provider-neutral runner for queue-backed async jobs. It is distinct from
-`orbit-scheduler`, which starts process-local jobs on intervals, and from Core's supervisor for
-application-owned background tasks. This package supports Python 3.11 through 3.14 and is pre-alpha.
+- Attempts are one-based and supplied by the queue adapter.
+- The default policy allows five attempts, beginning with a 250 ms delay and capping at 30 seconds.
+- Backoff doubles per attempt and applies downward jitter by default. The queue adapter decides
+  whether it can honor the requested delay and must document any rounding or retry policy of its
+  own.
+- Once the configured attempt count is reached, the delivery is rejected; whether that means
+  dead-lettering, deletion, or another broker action is adapter-specific.
+- Cancellation propagates and leaves the current delivery unsettled for lease/visibility timeout
+  redelivery. The broker's lease must outlast normal processing or be renewed by the adapter.
 
-```bash
-python -m pip install orbit-workers
-```
+Processing is at least once. Crashes can happen after side effects but before acknowledgement, and
+acknowledgement can be ambiguous if the connection fails. Make handlers idempotent or use an
+application-level deduplication strategy. The package provides no exactly-once processing,
+distributed transaction, durable retry schedule, ordering, or dead-letter storage.
 
-## Delivery limits
+## Failure and shutdown handling
 
-Handlers are at-least-once: they can run again after a timeout, process crash, or lost acknowledgement.
-Make side effects idempotent. The runner does not provide exactly-once processing, durable storage,
-dead-letter storage, cross-worker ordering, or a broker. `WorkPublisher` defines a confirmed
-publication contract but does not itself store messages. A queue failure stops the worker group so
-the host can mark it unhealthy and apply an explicit restart policy. No queue or provider adapter is
-included; without a separately installed adapter this package cannot publish or receive jobs.
+A receive, metadata, acknowledgement, retry, or reject failure raises a generic `WorkerQueueError`
+and stops the worker group. The host should mark the service unhealthy and apply an explicit
+restart/backoff policy; restarting cannot determine whether an ambiguous delivery was already
+settled. The worker does not close the queue adapter.
+
+On SIGTERM, the application host should stop admitting new work and set an `asyncio.Event` passed
+to `QueueWorker.run(stop_event=...)`. Workers finish and settle active handlers, then stop polling.
+A delivery returned at the same time as shutdown is left unsettled for broker redelivery. The
+worker exits after any in-progress receive returns, bounded by the configured poll timeout. Apply
+the deployment termination deadline around `run()`; if it expires, cancel the task and allow the
+broker lease to recover unsettled work. Cancellation cannot force-stop a handler that suppresses
+cancellation. After the worker task finishes, close adapter-owned clients and pools through the
+host lifecycle. Adapters should propagate cancellation and make each delivery settlement
+operation single-use. The library does not install process signal handlers.
+
+`on_failure` receives queue name, message ID, attempt count, sanitized exception type, and a Unix
+timestamp. It receives neither payload nor exception message. Observer failures are logged and do
+not replace the handler outcome. Keep callback work fast and bounded; a slow asynchronous observer
+delays retry/settlement. The package does not export built-in metrics or health endpoints, so expose
+worker state through the host's observability integrations.
 
 ## Production validation
 
-Validate startup/shutdown cleanup, timeout and cancellation behavior, concurrency and payload bounds where applicable, secret rotation and least-privilege access, data durability, backup/restore, and failover against the selected provider. Do not infer distributed or durable guarantees from an in-process API or fake-client tests.
+Validate the concrete broker adapter and deployment for visibility timeout/lease renewal,
+prefetch, connection recovery, ambiguous settlements, retry scheduling, dead-letter policy,
+credential rotation, TLS verification, shutdown deadlines, and duplicate handling. Exercise broker
+outages and handler cancellation in an isolated environment. The package's fake queue tests do not
+prove broker durability or hosted release readiness.

@@ -2,7 +2,10 @@
 
 `orbit-workers` defines provider-neutral `WorkQueue`/`WorkPublisher` contracts and a runner for
 queue-backed async jobs. It is distinct from `orbit-scheduler`, which starts process-local jobs on intervals, and from Core's supervisor for
-application-owned background tasks. This package supports Python 3.11 through 3.14 and is pre-alpha.
+application-owned background tasks. This package supports Python 3.11 through 3.14 and is an
+unpublished v0.1.0-alpha review candidate. Its API may change before a stable release. The local
+CPython 3.11.14–3.14.7 matrix passes 26 tests per version, Ruff lint/format, strict mypy, dependency
+audit, and wheel/source builds. Hosted CI and broker-backed deployment validation remain open.
 
 ```bash
 python -m pip install orbit-workers
@@ -47,6 +50,9 @@ credentials and shutdown. Core-aware adapters register the `WorkQueue` contract 
 `WORK_QUEUE_DEPENDENCY_KEY`. The runner does not close the queue. A receive or settlement failure
 raises a sanitized `WorkerQueueError` and stops the worker group. Handlers and adapters must
 cooperate with cancellation; a callback that suppresses cancellation can delay worker shutdown.
+For graceful shutdown, the application host sets an `asyncio.Event` passed to `run(stop_event=...)`
+on SIGTERM, then enforces its deployment termination deadline. The library does not install signal
+handlers.
 
 ## Delivery limits
 

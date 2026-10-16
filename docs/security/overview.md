@@ -1,17 +1,48 @@
-# Orbit Workers: security
+# Orbit Workers: security guidance
 
-## Package-specific security guidance
+The worker executes application handlers for messages received from a queue adapter. Treat the
+broker and every producer as trust boundaries unless the deployment's identity and authorization
+controls establish otherwise. Validate message schemas, tenant ownership, authorization, and
+business invariants inside the handler before performing side effects.
 
-The README does not define separate package-specific security guarantees. Follow the implemented API and provider documentation; do not infer security properties that are not documented and tested.
+## Message data and logs
 
-## Credentials and sensitive data
+`WorkMessage` bounds payload and header sizes and omits payload and headers from its repr. Header
+values reject ASCII control characters; queue and message identifiers use a restricted ASCII
+identifier syntax. These checks are input bounds, not content validation or proof that a message is
+authentic. Verify signatures or broker identity where the application threat model requires them.
 
-Use least-privilege credentials and a secret manager for provider secrets. Do not commit secrets, tokens, private keys, personal data, request bodies, raw provider errors, or opaque cursors. Enable TLS certificate verification for remote services unless package documentation gives a narrowly scoped local-development exception.
+The built-in failure report omits handler exception text and payload, and constrains the reported
+exception type to a safe identifier. Queue and message IDs are included in the default warning log;
+use opaque non-sensitive IDs and configure retention/access controls for logs. A custom failure
+observer receives those IDs and should avoid logging message data or secrets. Handler code and
+provider SDKs can still emit their own sensitive diagnostics; this package cannot redact logs they
+produce.
 
-## Vulnerability disclosure
+## Broker access and transport
 
-Follow the repository [security policy](../../SECURITY.md). Do not post vulnerability details in public issues. The policy describes private reporting alternatives without claiming that a hosting-platform setting is enabled.
+Queue credentials, network clients, TLS settings, and access policies belong to the adapter and
+deployment. Use a secret manager, least-privilege publish/consume permissions, TLS certificate
+verification, and separate identities for environments. Restrict who may publish privileged work
+and prevent untrusted producers from selecting arbitrary queue names or routing destinations.
+Rotate credentials without exposing them in logs or process arguments.
 
-## Limits
+## Retry and side-effect safety
 
-This page records source and package documentation, not an independent security audit. Validate the package, its provider SDKs, and its deployment configuration before production use.
+Messages may be delivered more than once after a process crash, lease expiry, lost acknowledgement,
+or retry. Handlers that issue payments, send mail, provision resources, or perform other external
+side effects need an application-level idempotency key or durable deduplication record. Do not rely
+on the in-process runner to make a broker operation transactional with handler work. Bound retry
+attempts and ensure poison-message handling does not create an unbounded hot loop.
+
+Cancellation leaves a delivery unsettled, so the broker may redeliver it after its lease timeout.
+Avoid exposing sensitive payloads through exception messages or tracing attributes. The failure
+callback receives a message ID and queue name; treat those identifiers as potentially sensitive if
+they encode customer or business data.
+
+## Scope and vulnerability reporting
+
+This package does not provide encryption at rest, broker authorization, payload encryption,
+dead-letter policy, or an audit trail. Configure those controls in the selected provider and host
+application. Follow the repository [security policy](../../SECURITY.md) for vulnerability
+disclosure and avoid publishing exploitable broker or credential details in public issues.

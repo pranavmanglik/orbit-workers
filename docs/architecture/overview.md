@@ -4,7 +4,10 @@
 
 `orbit-workers` is a provider-neutral runner for queue-backed async jobs. It is distinct from
 `orbit-scheduler`, which starts process-local jobs on intervals, and from Core's supervisor for
-application-owned background tasks. This package supports Python 3.11 through 3.14 and is pre-alpha.
+application-owned background tasks. This package supports Python 3.11 through 3.14 and is an
+unpublished v0.1.0-alpha review candidate. Its API may change before a stable release. The local
+CPython 3.11.14–3.14.7 matrix passes 26 tests per version, lint, formatting, strict typing, dependency
+audit, and package builds. Hosted CI and broker-backed deployment checks remain open.
 
 ```bash
 python -m pip install orbit-workers
@@ -16,7 +19,7 @@ The following dependency declarations come from the checked-in manifests. Option
 
 ### `pyproject.toml`
 - No dependencies declared.
-- Optional `dev` group: `pytest>=8,<10`, `pytest-asyncio>=0.24,<2`, `ruff>=0.8,<1`, `mypy>=1.13,<2`.
+- Optional `dev` group: `pytest>=8,<10`, `pytest-asyncio>=0.24,<2`, `ruff>=0.8,<1`, `mypy>=1.13,<2`, `pip-audit>=2.10,<3`, `setuptools>=83.0.0`.
 
 Declared dependencies do not mean that optional providers or services are bundled with this package.
 
@@ -42,6 +45,8 @@ the handler with an immutable `WorkMessage`, then acknowledges success, retries 
 using bounded exponential backoff, or rejects a delivery after the configured attempt limit:
 
 ```python
+import asyncio
+
 from orbit_workers import QueueWorker, RetryPolicy, WorkMessage
 
 
@@ -56,8 +61,9 @@ worker = QueueWorker(
     retry_policy=RetryPolicy(max_attempts=5, initial_delay=0.5, max_delay=20),
 )
 
-# Supervise this coroutine with the application lifecycle; cancellation stops its worker tasks.
-await worker.run()
+# The application owns SIGTERM handling and sets this event during graceful shutdown.
+stop = asyncio.Event()
+await worker.run(stop_event=stop)
 ```
 
 Concurrency and message payload/header sizes are bounded. Failure callbacks receive only the queue,
@@ -69,6 +75,8 @@ credentials and shutdown. Core-aware adapters register the `WorkQueue` contract 
 `WORK_QUEUE_DEPENDENCY_KEY`. The runner does not close the queue. A receive or settlement failure
 raises a sanitized `WorkerQueueError` and stops the worker group. Handlers and adapters must
 cooperate with cancellation; a callback that suppresses cancellation can delay worker shutdown.
+The host should set the optional stop event on SIGTERM to finish active deliveries and stop polling,
+then enforce its deployment termination deadline. The library does not install signal handlers.
 
 ## Boundary rules
 

@@ -198,6 +198,38 @@ async def test_handler_failure_reports_safe_metadata_and_retries() -> None:
     assert "secret-value" not in repr(reports[0])
 
 
+async def test_handler_exception_type_is_sanitized_before_reporting() -> None:
+    queue = FakeQueue()
+    delivery = FakeDelivery()
+    await queue.items.put(delivery)
+    reports: list[WorkFailure] = []
+    failed = asyncio.Event()
+    unsafe_error_type = type("Failure\nforged", (RuntimeError,), {})
+
+    async def handler(message: WorkMessage) -> None:
+        raise unsafe_error_type("private handler details")
+
+    def report(failure: WorkFailure) -> None:
+        reports.append(failure)
+        failed.set()
+
+    task = asyncio.create_task(
+        QueueWorker(
+            queue,
+            handler,
+            on_failure=report,
+            retry_policy=RetryPolicy(jitter=0),
+        ).run()
+    )
+    await asyncio.wait_for(failed.wait(), timeout=1)
+    await asyncio.wait_for(delivery.settled.wait(), timeout=1)
+    await stop_pool(task)
+
+    assert reports[0].error_type == "Exception"
+    assert "\n" not in reports[0].error_type
+    assert "private handler details" not in repr(reports[0])
+
+
 async def test_attempt_limit_rejects_without_retrying() -> None:
     queue = FakeQueue()
     delivery = FakeDelivery(attempt=2)
@@ -232,6 +264,33 @@ async def test_handler_cancellation_leaves_delivery_unsettled() -> None:
     await stop_pool(task)
 
     assert delivery.settlement is None
+
+
+async def test_graceful_stop_finishes_active_work_without_receiving_more() -> None:
+    queue = FakeQueue()
+    active = FakeDelivery(attempt=1)
+    pending = FakeDelivery(attempt=2)
+    await queue.items.put(active)
+    await queue.items.put(pending)
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    stop = asyncio.Event()
+
+    async def handler(message: WorkMessage) -> None:
+        entered.set()
+        await finish.wait()
+
+    task = asyncio.create_task(
+        QueueWorker(queue, handler, workers=1, poll_timeout=0.01).run(stop_event=stop)
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    stop.set()
+    finish.set()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert active.settlement == ("ack", None)
+    assert pending.settlement is None
+    assert queue.items.qsize() == 1
 
 
 @pytest.mark.parametrize(

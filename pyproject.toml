@@ -12,13 +12,20 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = []
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
   "Typing :: Typed",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.8,<1", "mypy>=1.13,<2"]
+dev = [
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.24,<2",
+  "ruff>=0.8,<1",
+  "mypy>=1.13,<2",
+  "pip-audit>=2.10,<3",
+  "setuptools>=83.0.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orbit_workers"]
